@@ -316,22 +316,22 @@ class SignalProcessor:
 
 
 
-    def peak_center_of_gravity(self):
+    def peak_center_of_gravity(self,**kwargs):
         """
         Calculates the peak center of gravity values from FPP plots of our cycles.
         """
 
+        fpp_cycles = self.get_fpp_cycles(**kwargs)
+        frequency_vector = np.array([])
         frequencies = np.arange(15, 141, 1)
-        angles = np.linspace(-180, 180, 19)
-        gamma = self.split_signals()[2]
-        power = morlet_wt(gamma,
-                          self.sample_rate,
-                          frequencies,
-                          mode='power')
-        power = scipy.stats.zscore(power, axis=0)
-        shifted_zscore_power = power + 2 * np.abs(np.min(power))
-        fpp_cycles = bin_tf_to_fpp(self.cycles[:, [0, -1]], shifted_zscore_power, 19)
-        cog_values = peak_cog(frequencies, angles, fpp_cycles, 0.95)
+        for kwarg, v in kwargs.items():
+            if kwarg == 'frequencies':
+                frequency_vector = np.arange(v[0], v[1]+1, 1)
+            if kwarg == 'norm' and v == 'zscore':
+                minimums = np.min(fpp_cycles, axis=(1,2))[:, np.newaxis, np.newaxis]*np.ones_like(fpp_cycles)
+                fpp_cycles += minimums
+        angle_vector = np.linspace(-180, 180, 19)
+        cog_values = peak_cog(frequency_vector,angle_vector, fpp_cycles, 0.95)
 
         return cog_values
 
@@ -440,20 +440,20 @@ class SegmentSignalProcessor(SignalProcessor):
         fpp_cycles = bin_tf_to_fpp(x=self.cycles[:, [0, -1]] - self.period[0], power=wavelet_transform,bin_count=19)
         return fpp_cycles
 
-    def peak_center_of_gravity(self):
-        frequencies = np.arange(15, 141, 1)
-        angles = angles = np.linspace(-180, 180, 19)
-        gamma = self.split_signals()[2]
-        power = morlet_wt(gamma,
-                          self.sample_rate,
-                          frequencies,
-                          mode='power')
-        power = scipy.stats.zscore(power, axis=0)
-        shifted_zscore_power = power + 2 * np.abs(np.min(power))
-        fpp_cycles = bin_tf_to_fpp(self.cycles[:, [0, -1]] - self.period[0], shifted_zscore_power, 19)
-        cog_values = peak_cog(frequencies, angles, fpp_cycles, 0.95)
-
-        return cog_values
+    # def peak_center_of_gravity(self):
+    #     frequencies = np.arange(15, 141, 1)
+    #     angles = angles = np.linspace(-180, 180, 19)
+    #     gamma = self.split_signals()[2]
+    #     power = morlet_wt(gamma,
+    #                       self.sample_rate,
+    #                       frequencies,
+    #                       mode='power')
+    #     power = scipy.stats.zscore(power, axis=0)
+    #     shifted_zscore_power = power + 2 * np.abs(np.min(power))
+    #     fpp_cycles = bin_tf_to_fpp(self.cycles[:, [0, -1]] - self.period[0], shifted_zscore_power, 19)
+    #     cog_values = peak_cog(frequencies, angles, fpp_cycles, 0.95)
+    #
+    #     return cog_values
 
 
 @dataclass
