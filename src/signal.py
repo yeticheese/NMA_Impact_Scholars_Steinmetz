@@ -121,7 +121,7 @@ class SignalProcessor:
                                                              ret_mask_freq=True)
         return self._imf, self._mask_freq
 
-    def frequency_transform(self) -> tuple:
+    def frequency_transform(self, method = 'nht') -> tuple:
         """
         Transform the calculated imfs into a tuple of Instantaneous Phase, Instantaneous Frequency, Instantaneous
         Amplitude
@@ -133,7 +133,7 @@ class SignalProcessor:
 
         if (getattr(self, '_imf') is None) or (getattr(self, '_mask_freq') is None):
             self._imf, self._mask_freq = self.iter_sift()
-        self._IP, self._IF, self._IA = spectra.frequency_transform(self._imf, self.sample_rate, 'nht')
+        self._IP, self._IF, self._IA = spectra.frequency_transform(self._imf, self.sample_rate, method)
 
         return self._IP, self._IP, self._IA
 
@@ -463,6 +463,7 @@ class SleepSignal(SignalProcessor):
 
     Attributes:
     - signal (np.ndarray): The signal data.
+    - rem_states (np.ndarray): REM periods within the overall signal
     - sample_rate (float): The sampling rate of the signal.
     - freq_range (tuple): The theta frequency range of the signal.
     - cycles (int): Private attribute for the cycles index data. (To be added)
