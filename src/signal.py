@@ -4,7 +4,6 @@ import emd.spectra as spectra
 import numpy as np
 import pandas as pd
 import scipy
-from bycycle.features import compute_features
 from icecream import ic
 from neurodsp.filt import filter_signal
 from typing import Tuple
@@ -32,8 +31,6 @@ class SignalProcessor:
         IA: Instantaneous amplitude.
         theta (np.ndarray): Theta signal.
         cycles: Cycles of the signal.
-        phasic: Phasic periods.
-        tonic: Tonic periods.
 
     Back-End Attributes:
         _imf (np.ndarray): Intrinsic Mode Functions.
@@ -43,9 +40,6 @@ class SignalProcessor:
         _IA: Instantaneous amplitude.
         _theta (np.ndarray): Theta signal.
         _cycles: Cycles of the signal.
-        _spike_df: DataFrame containing spike information.
-        _phasic: Phasic periods.
-        _tonic: Tonic periods.
     """
 
     def __init__(self, signal: np.ndarray, sample_rate: float, freq_range: tuple):
@@ -69,8 +63,6 @@ class SignalProcessor:
         self.IA = None
         self.theta: np.ndarray = None
         self.cycles = None
-        self.phasic = None
-        self.tonic = None
 
         # Back-End attributes
         self._imf: np.ndarray = None
@@ -80,9 +72,6 @@ class SignalProcessor:
         self._IA = None
         self._theta: np.ndarray = None
         self._cycles = None
-        self._spike_df = None
-        self._phasic = None
-        self._tonic = None
 
     def get_duration(self) -> np.ndarray:
         """
@@ -181,90 +170,6 @@ class SignalProcessor:
         cycles = get_cycles(self.get_theta(), mode)
         self._cycles = cycles
         return cycles
-
-    def spike_df(self):
-        """
-        Compute burst spike features DataFrame.
-
-        Returns:
-            pd.DataFrame: Spike DataFrame.
-        """
-
-        filtered_signal = filter_signal(sig=self.signal,
-                                        fs=self.sample_rate,
-                                        pass_type='lowpass',
-                                        f_range=25,
-                                        n_seconds=0.5,
-                                        remove_edges=False)
-
-        threshold_bycycle = {'amp_fraction_threshold': 0.8,
-                             'amp_consistency_threshold': 0,
-                             'period_consistency_threshold': 0,
-                             'monotonicity_threshold': 0,
-                             'min_n_cycles': 8}
-
-        df = compute_features(filtered_signal,
-                              2500, f_range=(4, 12), center_extrema='peak', burst_method='cycles',
-                              threshold_kwargs=threshold_bycycle)
-
-        self._spike_df = df[["sample_last_trough", "sample_next_trough", "is_burst"]]
-
-        return self._spike_df
-
-    def get_phasic_states(self):
-        """
-        Get the phasic states of the signal.
-
-        Returns:
-            np.ndarray: Array containing phasic period information.
-        """
-
-        if (getattr(self, '_spike_df') is None) or (hasattr(self, '_spike_df') is False):
-            self._spike_df = self.spike_df()
-            df = self._spike_df
-        else:
-            df = self._spike_df
-        try:
-            split_states = get_states(df['is_burst'].to_numpy(), True, 1)
-        except IndexError as e:
-            print('No phasic states detected in this REM epoch')
-            split_states = np.empty((0, 2))
-        if split_states.ndim == 3:
-            split_states = np.squeeze(split_states, 0)
-        phasic_states = np.empty((0, 2)).astype(int)
-        for state in split_states:
-            phasic_state = np.array([df['sample_last_trough'].iloc[state[0]], df['sample_next_trough'].iloc[state[1]]])
-            phasic_states = np.vstack([phasic_states, phasic_state])
-
-        self._phasic = phasic_states
-        return phasic_states
-
-    def get_tonic_states(self):
-        """
-        Get the tonic states of the signal.
-
-        Returns:
-            np.ndarray: Array containing tonic period information.
-        """
-        if (getattr(self, '_spike_df') is None) or (hasattr(self, '_spike_df') is False):
-            self._spike_df = self.spike_df()
-            df = self._spike_df
-        else:
-            df = self._spike_df
-        try:
-            split_states = get_states(df['is_burst'].to_numpy(), False, 1)
-        except IndexError as e:
-            print('No tonic states detected')
-            split_states = np.empty((0, 2))
-        if split_states.ndim == 3:
-            split_states = np.squeeze(split_states, 0)
-        tonic_states = np.empty((0, 2)).astype(int)
-        for state in split_states:
-            tonic_state = np.array([df['sample_last_trough'].iloc[state[0]], df['sample_next_trough'].iloc[state[1]]])
-            tonic_states = np.vstack([tonic_states, tonic_state])
-
-        self._tonic = tonic_states
-        return tonic_states
 
     # TODO: Fix duration length data type adjustability
     def apply_duration_threshold(self, duration_length: float or tuple = None):
@@ -467,34 +372,6 @@ class SignalProcessor:
         """
         self._cycles = value
 
-    @property
-    def phasic(self):
-        """
-        Getter for phasic periods.
-        """
-        return self._phasic
-
-    @phasic.setter
-    def phasic(self, value):
-        """
-        Setter for the phasic periods.
-        """
-        self._phasic = value
-
-    @property
-    def tonic(self):
-        """
-        Getter for tonic periods.
-        """
-        return self._tonic
-
-    @tonic.setter
-    def tonic(self, value):
-        """
-        Setter for the tonic periods.
-        """
-        self._tonic = value
-
 
 class SegmentSignalProcessor(SignalProcessor):
     """
@@ -553,40 +430,6 @@ class SegmentSignalProcessor(SignalProcessor):
         cycles = super().get_cycles(mode=mode) + self.period[0]
         self._cycles = cycles
         return cycles
-
-    def get_phasic_states(self):
-        """
-        Get phasic states of the signal with index locations adjusted to the overall signal.
-
-        Returns:
-            np.ndarray: Array containing phasic period information.
-        """
-        phasic_states = super().get_phasic_states() + self.period[0]
-        self._phasic = phasic_states
-        return phasic_states
-
-    def get_tonic_states(self):
-        """
-        Get tonic states of the signal with index locations adjusted to the overall signal.
-
-        Returns:
-            np.ndarray: Array containing tonic period information.
-        """
-        tonic_states = super().get_tonic_states() + self.period[0]
-        self._tonic = tonic_states
-        return tonic_states
-
-    def spike_df(self):
-        """
-        Compute burst spike features DataFrame with index locations adjusted to the overall signal.
-
-        Returns:
-            pd.DataFrame: Spike DataFrame.
-        """
-        spike_df = super().spike_df()
-        spike_df[['sample_last_trough', 'sample_next_trough']] += self.period[0]
-        self._spike_df = spike_df
-        return spike_df
 
     def get_fpp_cycles(self, **kwargs):
         """
@@ -650,8 +493,7 @@ class SleepSignal(SignalProcessor):
         """
         Initialize the SleepSignal object after creation.
 
-        This method processes REM states, gets cycles, applies thresholds,
-        and creates a spike dataframe.
+        This method processes REM states, gets cycles, and applies thresholds.
         """
         if not self.REM:
             ic('REM List is empty')
@@ -671,7 +513,6 @@ class SleepSignal(SignalProcessor):
         self.get_cycles()
         self.apply_duration_threshold()
         self.apply_amplitude_threshold(mode='sleep')
-        self.spike_df()
 
     def get_cycles(self, mode='peak'):
         """
@@ -749,19 +590,6 @@ class SleepSignal(SignalProcessor):
             amp_threshold_mask = theta_peak_amp >= sub_theta_pk_mask
             self.cycles = self.cycles[amp_threshold_mask]
 
-    def spike_df(self):
-        """
-        Create a dataframe of spikes in the sleep signal.
-
-        Returns:
-            pd.DataFrame: Dataframe containing spike information.
-        """
-        spike_df = pd.DataFrame()
-        for rem in self.REM:
-            spike_df = pd.concat([spike_df, rem._spike_df], axis=0, ignore_index=True)
-        self._spike_df = spike_df
-        return spike_df
-
     def get_fpp_cycles(self, **kwargs):
         """
         Get the frequency-phase-power (FPP) plot of the cycles of the sleep signal.
@@ -789,7 +617,7 @@ class SleepSignal(SignalProcessor):
         Build a dataset from the sleep signal.
 
         This method creates a pandas DataFrame with various features of the
-        sleep signal, including cycle information, amplitudes, and phasic/tonic states.
+        sleep signal, including cycle information, and amplitudes
 
         Args:
             **kwargs: Arbitrary keyword arguments.
@@ -801,13 +629,6 @@ class SleepSignal(SignalProcessor):
         df = df.rename(columns={0: 'first_trough', 1: 'first_zero_x', 2: 'peak', 3: 'last_zero_x', 4: 'last_trough'})
         df['sample_rate'] = self.sample_rate
         df['peak_amplitude'] = self.signal[self.cycles[:, 2]]
-        df['phasic/tonic'] = None
-        for phasic_state in self.get_phasic_states():
-            phasic_in_range_df = (df['first_trough'].between(*phasic_state) | df['last_trough'].between(*phasic_state))
-            df.loc[phasic_in_range_df, 'phasic/tonic'] = 'phasic'
-        for tonic_state in self.get_tonic_states():
-            tonic_in_range_df = (df['first_trough'].between(*tonic_state) | df['last_trough'].between(*tonic_state))
-            df.loc[tonic_in_range_df, 'phasic/tonic'] = 'tonic'
         df['fpp_peaks'] = self.get_fpp_peaks(**kwargs)
 
         return df
@@ -832,9 +653,6 @@ class REM_Segment(SegmentSignalProcessor):
         IF (np.ndarray): Instantaneous Frequency. Defaults to an empty array.
         IA (np.ndarray): Instantaneous Amplitude. Defaults to an empty array.
         cycles (np.ndarray): Cycles of the signal. Defaults to an empty 2D array.
-        spike_df (pd.DataFrame): DataFrame containing spike information. Defaults to None.
-        tonic (np.ndarray): Tonic periods of the REM segment. Defaults to None.
-        phasic (np.ndarray): Phasic periods of the REM segment. Defaults to None.
     """
     signal: np.ndarray
     period: np.ndarray
@@ -847,9 +665,6 @@ class REM_Segment(SegmentSignalProcessor):
     IA: np.ndarray = field(default_factory=lambda: np.array([]), metadata='Instantaneous Amplitude')
     cycles: np.ndarray = field(default_factory=lambda: np.empty((0, 5)).astype(
         int))  # Initialize cycles with empty array using default_factory
-    _spike_df: pd.DataFrame = None
-    tonic: np.ndarray = None
-    phasic: np.ndarray = None
 
     def __post_init__(self):
         """
@@ -867,9 +682,6 @@ class REM_Segment(SegmentSignalProcessor):
             ic('No cycle data, extracting cycles....')
             REM.get_cycles()
             self.cycles = REM._cycles
-        REM.spike_df()
-        self.phasic = self.get_phasic_states()
-        self.tonic = self.get_tonic_states()
 
 
 @dataclass
