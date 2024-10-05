@@ -1,11 +1,12 @@
 from dataclasses import dataclass, field
-
 import emd.sift as sift
 import emd.spectra as spectra
 import numpy as np
 import pandas as pd
 import scipy
+from bycycle.features import compute_features
 from icecream import ic
+from neurodsp.filt import filter_signal
 from typing import Tuple
 from src.functions import tg_split, get_cycles, get_states, morlet_wt, bin_tf_to_fpp, peak_cog, fpp_peaks
 
@@ -13,53 +14,48 @@ from src.functions import tg_split, get_cycles, get_states, morlet_wt, bin_tf_to
 class SignalProcessor:
     """
     A class for processing signals and extracting features.
-    This class has two modes of operation, a back-end and front-end.
 
-    The functions that process the intermediate features for further process populate the back-end values.
-    
-    The front-end values populate their slots with back-end values if they are empty, and can be overwritten
-    by values the user has calculated through different operations.
-
-    The functions that call on these values will use the front-end values first which can be populated with back-end
-    processed values or manually user-fed values.
+    This class has two modes of operation: a back-end and front-end. The back-end
+    processes intermediate features, while the front-end can be populated with
+    back-end values or user-provided values.
 
     Attributes:
-    signal (np.ndarray): The input signal.
-    sample_rate (float): The sample rate of the signal.
-    freq_range (tuple): The frequency range of interest.
+        signal (np.ndarray): The input signal.
+        sample_rate (float): The sample rate of the signal.
+        freq_range (tuple): The frequency range of interest.
 
     Front-End Attributes:
-    imf (np.ndarray): Intrinsic Mode Functions.
-    mask_freq (np.ndarray): Mask frequency.
-    IP: Instantaneous phase.
-    IF: Instantaneous frequency.
-    IA: Instantaneous amplitude.
-    theta (np.ndarray): Theta signal.
-    cycles: Cycles of the signal.
-    phasic: Phasic periods.
-    tonic: Tonic periods.
+        imf (np.ndarray): Intrinsic Mode Functions.
+        mask_freq (np.ndarray): Mask frequency.
+        IP: Instantaneous phase.
+        IF: Instantaneous frequency.
+        IA: Instantaneous amplitude.
+        theta (np.ndarray): Theta signal.
+        cycles: Cycles of the signal.
+        phasic: Phasic periods.
+        tonic: Tonic periods.
 
     Back-End Attributes:
-    _imf (np.ndarray): Intrinsic Mode Functions.
-    _mask_freq (np.ndarray): Mask frequency.
-    _IP: Instantaneous phase.
-    _IF: Instantaneous frequency.
-    _IA: Instantaneous amplitude.
-    _theta (np.ndarray): Theta signal.
-    _cycles: Cycles of the signal.
-    _spike_df: DataFrame containing spike information.
-    _phasic: Phasic periods.
-    _tonic: Tonic periods.
+        _imf (np.ndarray): Intrinsic Mode Functions.
+        _mask_freq (np.ndarray): Mask frequency.
+        _IP: Instantaneous phase.
+        _IF: Instantaneous frequency.
+        _IA: Instantaneous amplitude.
+        _theta (np.ndarray): Theta signal.
+        _cycles: Cycles of the signal.
+        _spike_df: DataFrame containing spike information.
+        _phasic: Phasic periods.
+        _tonic: Tonic periods.
     """
 
     def __init__(self, signal: np.ndarray, sample_rate: float, freq_range: tuple):
         """
-        Initializes the SignalProcessor class.
+        Initialize the SignalProcessor class.
 
-        Parameters:
-        signal (np.ndarray): The input signal.
-        sample_rate (float): The sample rate of the signal.
-        freq_range (tuple): The frequency range of interest.
+        Args:
+            signal (np.ndarray): The input signal.
+            sample_rate (float): The sample rate of the signal.
+            freq_range (tuple): The frequency range of interest.
         """
         self.signal = signal
         self.sample_rate = sample_rate
@@ -90,38 +86,35 @@ class SignalProcessor:
 
     def get_duration(self) -> np.ndarray:
         """
-        Calculates the duration of the signal.
+        Calculate the duration of the signal.
 
         Returns:
-        np.ndarray: The duration of each sample in milliseconds.
+            np.ndarray: The duration of each sample in milliseconds.
         """
 
         duration = np.linspace(0, len(self.signal) / self.sample_rate, len(self.signal)) * 1000
         return duration
 
-    # TODO: Create a dynamic EMD sifting method for the signal processor
-    # def sift(self,func=None,**kwargs):
-    #     if func == None:
-    #         self.imf,self.mask_freq=sift.iterated_mask_sift(self.signal,
-    #                                                         mask_0=mask,
-    #                                                         sample_rate=self.sample_rate,
-    #                                                         ret_mask_freq=True)
-    #     else:
+    # TODO: Create sift_config method to pass EMD sift parameters
+    def sift_config(self):
+        pass
 
     def iter_sift(self, **kwargs) -> tuple:
         """
-        Performs an iterated mask sift on the signal.
+        Perform an iterated mask sift on the signal.
+
+        Args:
+            **kwargs: Additional keyword arguments for the sifting process.
 
         Returns:
-        tuple: Tuple containing intrinsic mode functions and mask frequency.
+            tuple: A tuple containing intrinsic mode functions and mask frequency.
         """
-
         self._imf, self._mask_freq = sift.iterated_mask_sift(self.signal,
                                                              sample_rate=self.sample_rate,
                                                              ret_mask_freq=True)
         return self._imf, self._mask_freq
 
-    def frequency_transform(self, method = 'nht') -> tuple:
+    def frequency_transform(self, method: str = 'nht') -> tuple:
         """
         Transform the calculated imfs into a tuple of Instantaneous Phase, Instantaneous Frequency, Instantaneous
         Amplitude
@@ -139,12 +132,11 @@ class SignalProcessor:
 
     def split_signals(self) -> np.ndarray:
         """
-        Split the imfs into sub-theta, theta and gamma signals
+        Split the IMFs into sub-theta, theta, and gamma signals.
 
         Returns:
-        np.ndarray: Returns an array of 3 signals
+            np.ndarray: An array of 3 signals (sub-theta, theta, gamma).
         """
-
         if (getattr(self, 'imf') is None) or (getattr(self, 'mask_freq') is None):
             if (getattr(self, '_imf') is None) or (getattr(self, '_mask_freq') is None):
                 self._imf, self._mask_freq = self.iter_sift()
@@ -167,37 +159,120 @@ class SignalProcessor:
 
     def get_theta(self) -> np.ndarray:
         """
-        Get theta signal.
+        Get the theta signal.
 
         Returns:
-        np.ndarray: Theta signal.
+            np.ndarray: The theta signal.
         """
-
         self._theta = self.split_signals()[1]
         return self._theta
 
     def get_cycles(self, mode='peak'):
         """
-        Get cycles.
+        Get the cycles of the signal.
 
-        Parameters:
-        mode (str): Cycle output mode. Default is "peak"
+        Args:
+            mode (str, optional): Cycle output mode. Defaults to 'peak'.
 
         Returns:
-        np.ndarray: Cycles array, default is peak-centred.
+            np.ndarray: Cycles array, default is peak-centered.
         """
 
         cycles = get_cycles(self.get_theta(), mode)
         self._cycles = cycles
         return cycles
 
+    def spike_df(self):
+        """
+        Compute burst spike features DataFrame.
+
+        Returns:
+            pd.DataFrame: Spike DataFrame.
+        """
+
+        filtered_signal = filter_signal(sig=self.signal,
+                                        fs=self.sample_rate,
+                                        pass_type='lowpass',
+                                        f_range=25,
+                                        n_seconds=0.5,
+                                        remove_edges=False)
+
+        threshold_bycycle = {'amp_fraction_threshold': 0.8,
+                             'amp_consistency_threshold': 0,
+                             'period_consistency_threshold': 0,
+                             'monotonicity_threshold': 0,
+                             'min_n_cycles': 8}
+
+        df = compute_features(filtered_signal,
+                              2500, f_range=(4, 12), center_extrema='peak', burst_method='cycles',
+                              threshold_kwargs=threshold_bycycle)
+
+        self._spike_df = df[["sample_last_trough", "sample_next_trough", "is_burst"]]
+
+        return self._spike_df
+
+    def get_phasic_states(self):
+        """
+        Get the phasic states of the signal.
+
+        Returns:
+            np.ndarray: Array containing phasic period information.
+        """
+
+        if (getattr(self, '_spike_df') is None) or (hasattr(self, '_spike_df') is False):
+            self._spike_df = self.spike_df()
+            df = self._spike_df
+        else:
+            df = self._spike_df
+        try:
+            split_states = get_states(df['is_burst'].to_numpy(), True, 1)
+        except IndexError as e:
+            print('No phasic states detected in this REM epoch')
+            split_states = np.empty((0, 2))
+        if split_states.ndim == 3:
+            split_states = np.squeeze(split_states, 0)
+        phasic_states = np.empty((0, 2)).astype(int)
+        for state in split_states:
+            phasic_state = np.array([df['sample_last_trough'].iloc[state[0]], df['sample_next_trough'].iloc[state[1]]])
+            phasic_states = np.vstack([phasic_states, phasic_state])
+
+        self._phasic = phasic_states
+        return phasic_states
+
+    def get_tonic_states(self):
+        """
+        Get the tonic states of the signal.
+
+        Returns:
+            np.ndarray: Array containing tonic period information.
+        """
+        if (getattr(self, '_spike_df') is None) or (hasattr(self, '_spike_df') is False):
+            self._spike_df = self.spike_df()
+            df = self._spike_df
+        else:
+            df = self._spike_df
+        try:
+            split_states = get_states(df['is_burst'].to_numpy(), False, 1)
+        except IndexError as e:
+            print('No tonic states detected')
+            split_states = np.empty((0, 2))
+        if split_states.ndim == 3:
+            split_states = np.squeeze(split_states, 0)
+        tonic_states = np.empty((0, 2)).astype(int)
+        for state in split_states:
+            tonic_state = np.array([df['sample_last_trough'].iloc[state[0]], df['sample_next_trough'].iloc[state[1]]])
+            tonic_states = np.vstack([tonic_states, tonic_state])
+
+        self._tonic = tonic_states
+        return tonic_states
+
     # TODO: Fix duration length data type adjustability
     def apply_duration_threshold(self, duration_length: float or tuple = None):
         """
-        Applies a duration threshold to filter cycles.
+        Apply a duration threshold to filter cycles.
 
         Args:
-        duration_length (float or tuple, optional): The duration threshold in milliseconds.
+            duration_length (float or tuple, optional): The duration threshold in milliseconds.
         """
         if duration_length is None:
             duration_length = 1000 / np.array(self.freq_range)
@@ -217,9 +292,10 @@ class SignalProcessor:
 
     def apply_amplitude_threshold(self, mode='sleep'):
         """
-        Applies an amplitude threshold to filter cycles based on their peak amplitudes. Two modes, sleep or wake each corresponding to the amplitude
-        distribution of the signal during a brain state.
+        Apply an amplitude threshold to filter cycles based on their peak amplitudes.
 
+        Args:
+            mode (str, optional): The mode for threshold application ('sleep' or 'wake'). Defaults to 'sleep'.
         """
         if getattr(self, 'cycles') is None:
             if getattr(self, '_cycles') is None:
@@ -232,7 +308,7 @@ class SignalProcessor:
         sub_theta = self.split_signals()[0]
         theta = self.split_signals()[1]
         theta_peak_amp = theta[self.cycles[:, 2]]
-        
+
         if mode == 'sleep':
             amp_threshold = 2 * np.abs(sub_theta).std()
             amp_threshold_mask = theta_peak_amp > amp_threshold
@@ -245,26 +321,26 @@ class SignalProcessor:
             amp_threshold_mask = theta_peak_amp >= amp_threshold[self.cycles[:, 2]]
             self.cycles = self.cycles[amp_threshold_mask]
 
-    def morlet_wt(self, band: int or str or Tuple[int, ...] = 'gamma', frequencies=(1,200), norm='zscore',mode='power'):
+    def morlet_wt(self, band: int or str or Tuple[int, ...] = 'gamma', frequencies=(1, 200), norm='zscore',
+                  mode='power'):
         """
+        Perform Morlet wavelet transform on the signal.
 
-        Parameters:
-            band: an imf index integer (int) or frequency range (tuple) or oscillatory frequency band (str) to select
-            the Intrinsic Mode Functions from the imf attribute. Multiple IMFs selected will be summed together.
-            frequencies:Frequencies to perform morlet wavelet decomposition on.
-            norm: normalization mode
-            mode: return mode which can be either 'power' or 'amplitude' or 'complex' form
+        Args:
+            band (int or str or Tuple[int, ...]): IMF index, frequency range, or oscillatory frequency band.
+            frequencies (tuple, optional): Frequencies for wavelet decomposition. Defaults to (1, 200).
+            norm (str, optional): Normalization mode. Defaults to 'zscore'.
+            mode (str, optional): Return mode ('power', 'amplitude', or 'complex'). Defaults to 'power'.
 
         Returns:
-            np.ndarray: a 2D array of the morlet wavelet transform of the signal.
-
+            np.ndarray: A 2D array of the Morlet wavelet transform of the signal.
         """
-        frequency_vector = np.arange(frequencies[0], frequencies[1]+1, 1)
+        frequency_vector = np.arange(frequencies[0], frequencies[1] + 1, 1)
         wavelet_signal = np.empty(self.signal.shape)
         if isinstance(band, int):
             wavelet_signal = self.imf.T[band]
         elif isinstance(band, tuple) and all(isinstance(item, int) for item in band):
-            wavelet_signal = np.sum(self.imf[:,[band]].T,axis=0)
+            wavelet_signal = np.sum(self.imf[:, [band]].T, axis=0)
         elif isinstance(band, str):
             if band == 'gamma':
                 wavelet_signal = self.split_signals()[2]
@@ -279,17 +355,17 @@ class SignalProcessor:
         if norm is None:
             return wavelet_transform
         elif norm == 'zscore' and mode != 'complex':
-            return scipy.stats.zscore(wavelet_transform,axis=0)
+            return scipy.stats.zscore(wavelet_transform, axis=0)
 
-    def get_fpp_cycles(self,**kwargs): # Temporary function
+    def get_fpp_cycles(self, **kwargs):  # Temporary function
         """
+        Generate Frequency Phase Plots (FPP) of theta cycles of the signal.
 
-        Parameters:
-            **kwargs: keyword arguments passed to morlet_wt() function
+        Args:
+            **kwargs: Keyword arguments passed to morlet_wt() function.
 
         Returns:
             np.ndarray: Array containing frequency phase plots of each cycle.
-
         """
         wavelet_transform = self.morlet_wt(**kwargs)
         fpp_cycles = bin_tf_to_fpp(x=self.cycles[:, [0, -1]], power=wavelet_transform, bin_count=19)
@@ -297,41 +373,41 @@ class SignalProcessor:
 
     def get_fpp_peaks(self, **kwargs):
         """
+        Get the locations of peaks within the frequency phase plot.
 
-        Parameters:
-            **kwargs: keyword arguments passed to fpp_peaks() function
+        Args:
+            **kwargs: Keyword arguments passed to fpp_peaks() function.
 
         Returns:
-            np.ndarray: Array containing the locations of peaks within the frequency phase plot
-
+            np.ndarray: Array containing the locations of peaks within the frequency phase plot.
         """
         fpp_cycles = self.get_fpp_cycles(**kwargs)
         frequency_vector = np.array([])
         for kwarg, v in kwargs.items():
             if kwarg == 'frequencies':
-                frequency_vector = np.arange(v[0], v[1]+1, 1)
-        angle_vector = np.linspace (-180,180,19)
-        peak_points = fpp_peaks(frequencies=frequency_vector, angles= angle_vector, fpp_cycles=fpp_cycles)
+                frequency_vector = np.arange(v[0], v[1] + 1, 1)
+        angle_vector = np.linspace(-180, 180, 19)
+        peak_points = fpp_peaks(frequencies=frequency_vector, angles=angle_vector, fpp_cycles=fpp_cycles)
         return peak_points
 
-
-
-    def peak_center_of_gravity(self,**kwargs):
+    def peak_center_of_gravity(self):
         """
-        Calculates the peak center of gravity values from FPP plots of our cycles.
-        """
+        Calculate the peak center of gravity values from FPP plots of the cycles.
 
-        fpp_cycles = self.get_fpp_cycles(**kwargs)
-        frequency_vector = np.array([])
-        frequencies = np.arange(15, 141, 1)
-        for kwarg, v in kwargs.items():
-            if kwarg == 'frequencies':
-                frequency_vector = np.arange(v[0], v[1]+1, 1)
-            if kwarg == 'norm' and v == 'zscore':
-                minimums = np.min(fpp_cycles, axis=(1,2))[:, np.newaxis, np.newaxis]*np.ones_like(fpp_cycles)
-                fpp_cycles += minimums
-        angle_vector = np.linspace(-180, 180, 19)
-        cog_values = peak_cog(frequency_vector,angle_vector, fpp_cycles, 0.95)
+        Returns:
+            np.ndarray: Array of center of gravity values.
+        """
+        frequencies = np.arange(20, 141, 1)
+        angles = np.linspace(-180, 180, 19)
+        gamma = self.split_signals()[1]
+        power = morlet_wt(np.sum(self.imf.T[gamma], axis=0),
+                          self.sample_rate,
+                          frequencies,
+                          mode='power')
+        power = scipy.stats.zscore(power, axis=0)
+        shifted_zscore_power = power + 2 * np.abs(power)
+        fpp_cycles = bin_tf_to_fpp(self.cycles[:, [0, -1]], shifted_zscore_power, 19)
+        cog_values = peak_cog(angles, frequencies, fpp_cycles, 0.95)
 
         return cog_values
 
@@ -421,35 +497,124 @@ class SignalProcessor:
 
 
 class SegmentSignalProcessor(SignalProcessor):
+    """
+    A class for processing segments of signals and extracting features.
+
+    This class extends SignalProcessor to handle signal segments. It maintains
+    both back-end and front-end operations, where back-end processes populate
+    intermediate features, and front-end values can be populated from back-end
+    or user-provided values.
+
+    Attributes:
+        signal (np.ndarray): The input signal.
+        period (np.ndarray): The period of the signal segment.
+        sample_rate (float): The sample rate of the signal.
+        freq_range (tuple): The frequency range of interest.
+
+    Inherited Attributes:
+        Refer to the SignalProcessor class for additional attributes.
+    """
+
     def __init__(self, signal: np.ndarray, period: np.ndarray, sample_rate: float, freq_range: tuple, ):
+        """
+        Initialize the SegmentSignalProcessor class.
+
+        Args:
+            signal (np.ndarray): The input signal.
+            period (np.ndarray): The period (location of indices) of the signal segment.
+            sample_rate (float): The sample rate of the signal.
+            freq_range (tuple): The frequency range of interest.
+        """
         super().__init__(signal, sample_rate, freq_range)
         self.period = period
 
     def get_duration(self) -> np.ndarray:
+        """
+        Calculate the duration of the signal segment.
+
+        Returns:
+            np.ndarray: The duration of each sample in milliseconds, from the
+                        beginning to the end of the segment.
+        """
         time = self.period / self.sample_rate
         duration = np.linspace(time[0], time[1], len(self.signal)) * 1000
         return duration
 
     def get_cycles(self, mode='peak'):
+        """
+        Get cycles adjusted to their index locations with respect to the entire signal.
+
+        Args:
+            mode (str, optional): Cycle output mode. Defaults to 'peak'.
+
+        Returns:
+            np.ndarray: Cycles array, default is peak-centered.
+        """
         cycles = super().get_cycles(mode=mode) + self.period[0]
         self._cycles = cycles
         return cycles
 
+    def get_phasic_states(self):
+        """
+        Get phasic states of the signal with index locations adjusted to the overall signal.
+
+        Returns:
+            np.ndarray: Array containing phasic period information.
+        """
+        phasic_states = super().get_phasic_states() + self.period[0]
+        self._phasic = phasic_states
+        return phasic_states
+
+    def get_tonic_states(self):
+        """
+        Get tonic states of the signal with index locations adjusted to the overall signal.
+
+        Returns:
+            np.ndarray: Array containing tonic period information.
+        """
+        tonic_states = super().get_tonic_states() + self.period[0]
+        self._tonic = tonic_states
+        return tonic_states
+
+    def spike_df(self):
+        """
+        Compute burst spike features DataFrame with index locations adjusted to the overall signal.
+
+        Returns:
+            pd.DataFrame: Spike DataFrame.
+        """
+        spike_df = super().spike_df()
+        spike_df[['sample_last_trough', 'sample_next_trough']] += self.period[0]
+        self._spike_df = spike_df
+        return spike_df
+
     def get_fpp_cycles(self, **kwargs):
+        """
+        Generate Frequency Phase Plots (FPP) of theta cycles of segment signals.
+
+        This method adjusts index locations and uses keyword arguments to be
+        passed through self.morlet_wt().
+
+        Args:
+            **kwargs: Keyword arguments passed to morlet_wt() function.
+
+        Returns:
+            np.ndarray: Array containing frequency phase plots of each cycle.
+        """
         wavelet_transform = self.morlet_wt(**kwargs)
-        fpp_cycles = bin_tf_to_fpp(x=self.cycles[:, [0, -1]] - self.period[0], power=wavelet_transform,bin_count=19)
+        fpp_cycles = bin_tf_to_fpp(x=self.cycles[:, [0, -1]] - self.period[0], power=wavelet_transform, bin_count=19)
         return fpp_cycles
 
     # def peak_center_of_gravity(self):
-    #     frequencies = np.arange(15, 141, 1)
+    #     frequencies = np.arange(20, 141, 1)
     #     angles = angles = np.linspace(-180, 180, 19)
-    #     gamma = self.split_signals()[2]
-    #     power = morlet_wt(gamma,
+    #     gamma = tg_split(self.mask_freq, self.freq_range)[2]
+    #     power = morlet_wt(np.sum(self.imf.T[gamma], axis=0),
     #                       self.sample_rate,
     #                       frequencies,
     #                       mode='power')
     #     power = scipy.stats.zscore(power, axis=0)
-    #     shifted_zscore_power = power + 2 * np.abs(np.min(power))
+    #     shifted_zscore_power = power + 2 * np.abs(power)
     #     fpp_cycles = bin_tf_to_fpp(self.cycles[:, [0, -1]] - self.period[0], shifted_zscore_power, 19)
     #     cog_values = peak_cog(frequencies, angles, fpp_cycles, 0.95)
     #
@@ -459,17 +624,19 @@ class SegmentSignalProcessor(SignalProcessor):
 @dataclass
 class SleepSignal(SignalProcessor):
     """
-    A data class representing a signal with various attributes.
+    A class for processing sleep signals with various attributes and methods.
+
+    This class extends SignalProcessor to handle sleep-related signal processing,
+    including REM state analysis and cycle detection.
 
     Attributes:
-    - signal (np.ndarray): The signal data.
-    - rem_states (np.ndarray): REM periods within the overall signal
-    - sample_rate (float): The sampling rate of the signal.
-    - freq_range (tuple): The theta frequency range of the signal.
-    - cycles (int): Private attribute for the cycles index data. (To be added)
+        signal (np.ndarray): The signal data.
+        rem_states (np.ndarray): The REM states of the signal.
+        sample_rate (float): The sampling rate of the signal.
+        freq_range (tuple): The theta frequency range of the signal.
+        REM (list): List of REM_Segment objects.
+        cycles (np.ndarray): Array of cycle indices.
 
-    Methods:
-    - To be determined
     """
     signal: np.ndarray
     rem_states: np.ndarray
@@ -480,6 +647,12 @@ class SleepSignal(SignalProcessor):
         int))  # Initialize cycles with empty array using default_factory
 
     def __post_init__(self):
+        """
+        Initialize the SleepSignal object after creation.
+
+        This method processes REM states, gets cycles, applies thresholds,
+        and creates a spike dataframe.
+        """
         if not self.REM:
             ic('REM List is empty')
             actual_rem_states = []
@@ -498,8 +671,18 @@ class SleepSignal(SignalProcessor):
         self.get_cycles()
         self.apply_duration_threshold()
         self.apply_amplitude_threshold(mode='sleep')
+        self.spike_df()
 
     def get_cycles(self, mode='peak'):
+        """
+        Get the cycles of the sleep signal.
+
+        Args:
+            mode (str, optional): The mode for cycle detection. Defaults to 'peak'.
+
+        Returns:
+            np.ndarray: Array of cycle indices.
+        """
         cycles = np.empty((0, 5)).astype(int)
         for rem in self.REM:
             if hasattr(rem, 'cycles') is None:
@@ -510,12 +693,25 @@ class SleepSignal(SignalProcessor):
         return cycles
 
     def apply_duration_threshold(self, duration_length: float or tuple = None):
+        """
+        Apply a duration threshold to the sleep signal.
+
+        Args:
+            duration_length (float or tuple, optional): The duration threshold.
+                Defaults to None.
+        """
         for rem in self.REM:
             rem.apply_duration_threshold(duration_length=duration_length)
         super().apply_duration_threshold(duration_length=duration_length)
 
+    def apply_amplitude_threshold(self, mode='sleep'):
+        """
+        Apply an amplitude threshold to the sleep signal.
 
-    def apply_amplitude_threshold(self, mode='normal'):
+        Args:
+            mode (str, optional): The mode for threshold application.
+                Can be 'sleep', or 'wake'. Defaults to 'sleep'.
+        """
         sub_theta = np.array([])
         theta = np.array([])
         theta_peak_amp = np.array([])
@@ -554,17 +750,32 @@ class SleepSignal(SignalProcessor):
             self.cycles = self.cycles[amp_threshold_mask]
 
     def spike_df(self):
+        """
+        Create a dataframe of spikes in the sleep signal.
+
+        Returns:
+            pd.DataFrame: Dataframe containing spike information.
+        """
         spike_df = pd.DataFrame()
         for rem in self.REM:
             spike_df = pd.concat([spike_df, rem._spike_df], axis=0, ignore_index=True)
         self._spike_df = spike_df
         return spike_df
 
-    def get_fpp_cycles(self,**kwargs):
+    def get_fpp_cycles(self, **kwargs):
+        """
+        Get the frequency-phase-power (FPP) plot of the cycles of the sleep signal.
+
+        Args:
+            **kwargs: Arbitrary keyword arguments.
+
+        Returns:
+            np.ndarray: Array of FPP cycles.
+        """
         ic(kwargs)
-        for kwarg,v in kwargs.items():
+        for kwarg, v in kwargs.items():
             if kwarg == 'frequencies':
-                frequency_vector = np.arange(v[0], v[1]+1, 1)
+                frequency_vector = np.arange(v[0], v[1] + 1, 1)
         fpp_cycles = np.empty((0, frequency_vector.shape[0], 19))
         ic(fpp_cycles.shape)
         for rem in self.REM:
@@ -574,10 +785,29 @@ class SleepSignal(SignalProcessor):
         return fpp_cycles
 
     def build_dataset(self, **kwargs):
+        """
+        Build a dataset from the sleep signal.
+
+        This method creates a pandas DataFrame with various features of the
+        sleep signal, including cycle information, amplitudes, and phasic/tonic states.
+
+        Args:
+            **kwargs: Arbitrary keyword arguments.
+
+        Returns:
+            pd.DataFrame: DataFrame containing the built dataset.
+        """
         df = pd.DataFrame(self.cycles)
         df = df.rename(columns={0: 'first_trough', 1: 'first_zero_x', 2: 'peak', 3: 'last_zero_x', 4: 'last_trough'})
         df['sample_rate'] = self.sample_rate
         df['peak_amplitude'] = self.signal[self.cycles[:, 2]]
+        df['phasic/tonic'] = None
+        for phasic_state in self.get_phasic_states():
+            phasic_in_range_df = (df['first_trough'].between(*phasic_state) | df['last_trough'].between(*phasic_state))
+            df.loc[phasic_in_range_df, 'phasic/tonic'] = 'phasic'
+        for tonic_state in self.get_tonic_states():
+            tonic_in_range_df = (df['first_trough'].between(*tonic_state) | df['last_trough'].between(*tonic_state))
+            df.loc[tonic_in_range_df, 'phasic/tonic'] = 'tonic'
         df['fpp_peaks'] = self.get_fpp_peaks(**kwargs)
 
         return df
@@ -585,6 +815,27 @@ class SleepSignal(SignalProcessor):
 
 @dataclass
 class REM_Segment(SegmentSignalProcessor):
+    """
+    A dataclass for processing and analyzing REM (Rapid Eye Movement) sleep segments.
+
+    This class extends SegmentSignalProcessor to handle REM-specific signal processing.
+    It initializes and computes various signal attributes if not provided.
+
+    Attributes:
+        signal (np.ndarray): The input signal for the REM segment.
+        period (np.ndarray): The period (start and end indices) of the REM segment.
+        sample_rate (float): The sample rate of the signal.
+        freq_range (tuple): The frequency range of interest.
+        imf (np.ndarray): Intrinsic Mode Functions. Defaults to an empty array.
+        mask_freq (float): Mask frequency. Defaults to an empty array.
+        IP (np.ndarray): Instantaneous Power. Defaults to an empty array.
+        IF (np.ndarray): Instantaneous Frequency. Defaults to an empty array.
+        IA (np.ndarray): Instantaneous Amplitude. Defaults to an empty array.
+        cycles (np.ndarray): Cycles of the signal. Defaults to an empty 2D array.
+        spike_df (pd.DataFrame): DataFrame containing spike information. Defaults to None.
+        tonic (np.ndarray): Tonic periods of the REM segment. Defaults to None.
+        phasic (np.ndarray): Phasic periods of the REM segment. Defaults to None.
+    """
     signal: np.ndarray
     period: np.ndarray
     sample_rate: float
@@ -594,12 +845,19 @@ class REM_Segment(SegmentSignalProcessor):
     IP: np.ndarray = field(default_factory=lambda: np.array([]), metadata='Instaneous Power')
     IF: np.ndarray = field(default_factory=lambda: np.array([]), metadata='Instantaneous Frequency')
     IA: np.ndarray = field(default_factory=lambda: np.array([]), metadata='Instantaneous Amplitude')
-    cycles: np.ndarray = field(default_factory=lambda: np.empty((0, 5)).astype(int))  # Initialize cycles with empty array using default_factory
+    cycles: np.ndarray = field(default_factory=lambda: np.empty((0, 5)).astype(
+        int))  # Initialize cycles with empty array using default_factory
     _spike_df: pd.DataFrame = None
     tonic: np.ndarray = None
     phasic: np.ndarray = None
 
     def __post_init__(self):
+        """
+        Post-initialization method to compute and set various attributes if not provided.
+
+        This method initializes a SegmentSignalProcessor object and uses it to compute
+        IMFs, frequency transforms, cycles, and other attributes if they are not already set.
+        """
         REM = SegmentSignalProcessor(self.signal, self.period, self.sample_rate, self.freq_range)
         if (self.imf.size == 0) or (self.mask_freq.size == 0):
             ic('No imf data, generating imfs....')
@@ -609,9 +867,31 @@ class REM_Segment(SegmentSignalProcessor):
             ic('No cycle data, extracting cycles....')
             REM.get_cycles()
             self.cycles = REM._cycles
+        REM.spike_df()
+        self.phasic = self.get_phasic_states()
+        self.tonic = self.get_tonic_states()
+
 
 @dataclass
 class WakeSignal(SignalProcessor):
+    """
+    A class for processing and analyzing wake state signals.
+
+    This class extends SignalProcessor to handle wake-specific signal processing.
+    It initializes and computes various signal attributes if not provided.
+
+    Attributes:
+        signal (np.ndarray): The input signal for the wake state.
+        sample_rate (float): The sample rate of the signal.
+        freq_range (tuple): The frequency range of interest.
+        imf (np.ndarray): Intrinsic Mode Functions. Defaults to an empty array.
+        mask_freq (float): Mask frequency. Defaults to an empty array.
+        IP (np.ndarray): Instantaneous Power. Defaults to an empty array.
+        IF (np.ndarray): Instantaneous Frequency. Defaults to an empty array.
+        IA (np.ndarray): Instantaneous Amplitude. Defaults to an empty array.
+        cycles (np.ndarray): Cycles of the signal. Defaults to an empty 2D array.
+    """
+
     signal: np.ndarray
     sample_rate: float
     freq_range: tuple
@@ -624,6 +904,13 @@ class WakeSignal(SignalProcessor):
     cycles: np.ndarray = field(default_factory=lambda: np.empty((0, 5)).astype(int))
 
     def __post_init__(self):
+        """
+        Post-initialization method to compute and set various attributes if not provided.
+
+        This method initializes IMFs, frequency transforms, and cycles if they are not already set.
+        It also applies duration and amplitude thresholds specific to wake state signals.
+        """
+
         if (self.imf.size == 0) or (self.mask_freq.size == 0):
             ic('No imf data, generating imfs....')
             self.imf, self.mask_freq = self.iter_sift()
@@ -634,7 +921,20 @@ class WakeSignal(SignalProcessor):
         self.apply_duration_threshold()
         self.apply_amplitude_threshold(mode='wake')
 
-    def build_dataset(self,**kwargs):
+    def build_dataset(self, **kwargs):
+        """
+        Build a dataset from the wake signal cycles.
+
+        This method creates a pandas DataFrame containing cycle information,
+        including trough and peak locations, sample rate, peak amplitude,
+        and frequency-phase-power (FPP) peaks.
+
+        Args:
+            **kwargs: Additional keyword arguments to be passed to get_fpp_peaks method.
+
+        Returns:
+            pd.DataFrame: A DataFrame containing cycle information and derived features.
+        """
         df = pd.DataFrame(self.cycles)
         df = df.rename(columns={0: 'first_trough', 1: 'first_zero_x', 2: 'peak', 3: 'last_zero_x', 4: 'last_trough'})
         df['sample_rate'] = self.sample_rate
