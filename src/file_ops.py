@@ -1,7 +1,10 @@
 import os
 import tarfile
+from tarfile import TarFile
 import numpy as np
 from typing import BinaryIO
+import dask.array as da
+import io
 
 def binary_to_signal(bin_file: BinaryIO,
                     num_channels: int = 385,
@@ -56,6 +59,30 @@ def binary_to_signal(bin_file: BinaryIO,
     except Exception as e:
         raise Exception(f"Error processing binary data: {str(e)}")
 
+def npy_loader(tar:TarFile,filename:str)-> np.ndarray:
+    '''
+    Numpy loader function for .npy in tarball (.tar) packages.
+
+    :param filename: str
+    :return: np.ndarray
+    '''
+    try:
+        npy_file = tar.extractfile(filename)
+        if npy_file is not None:
+            npy_file_content = npy_file.read()
+
+            # Check file size to confirm it's not empty or corrupted
+            if len(npy_file_content) == 0:
+                raise ValueError(f"The .npy file '{filename}' is empty or corrupted.")
+
+            # Load .npy file from memory using BytesIO
+            np_data = np.load(io.BytesIO(npy_file_content))
+            return np_data
+        else:
+            raise FileNotFoundError(f"Could not find or extract the file: {filename}")
+    except Exception as e:
+        print(f"Error reading .npy file: {e}")
+
 
 def get_probe_signals(tar_path: str,
                      probe_select: int,
@@ -102,9 +129,11 @@ def get_probe_signals(tar_path: str,
         elif not tar_path.endswith("_lfp.tar"):
             raise FileNotFoundError(f"{tar_path} is not a valid LFP tarball file.")
 
+        print('Reading probe signal data from tar file...')
 
         with tarfile.open(tar_path, 'r') as tar:
             bin_file_names = np.array(tar.getnames())
+            print(bin_file_names)
 
             if probe_select is not None:
                 if isinstance(probe_select, (int, np.integer)):
@@ -113,9 +142,11 @@ def get_probe_signals(tar_path: str,
                             f"probe_select index {probe_select} is out of range "
                             f"for {len(bin_file_names)} probes"
                         )
-                    bin_file_names = bin_file_names[probe_select]
+                    bin_file_name = bin_file_names[probe_select]
+            else:
+                raise TypeError('probe_select must be an integer')
 
-            bin_io = tar.extractfile(bin_file_names)
+            bin_io = tar.extractfile(bin_file_name)
             reshaped_data = binary_to_signal(bin_io, num_channels, chunk_size, dtype)
 
     except tarfile.TarError as e:
@@ -123,4 +154,4 @@ def get_probe_signals(tar_path: str,
     except Exception as e:
         raise Exception(f"Unexpected error: {e}")
 
-    return reshaped_data
+    return da.from_array(reshaped_data, chunks=(16,-1))
