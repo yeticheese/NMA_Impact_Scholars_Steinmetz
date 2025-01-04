@@ -142,9 +142,10 @@ def get_probe_signals(tar_path: str,
                             f"probe_select index {probe_select} is out of range "
                             f"for {len(bin_file_names)} probes"
                         )
-                    bin_file_name = bin_file_names[probe_select]
-            else:
-                raise TypeError('probe_select must be an integer')
+                    else:
+                        bin_file_name = bin_file_names[probe_select]
+                else:
+                    raise TypeError('probe_select must be an integer')
 
             bin_io = tar.extractfile(bin_file_name)
             reshaped_data = binary_to_signal(bin_io, num_channels, chunk_size, dtype)
