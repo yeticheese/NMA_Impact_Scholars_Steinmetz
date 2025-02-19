@@ -59,7 +59,7 @@ class BaseLoader(ABC):
 
     def to_dataframe(self) -> pd.DataFrame:
         """
-        Convert the Trials data to a pandas DataFrame.
+        Converts field data to a pandas DataFrame.
         For multi-dimensional arrays, only the first dimension is used as the index,
         and the remaining dimensions are stored as array objects in the cells.
         """
@@ -68,7 +68,6 @@ class BaseLoader(ABC):
 
         # Process each attribute
         for attr_name, value in self.__dict__.items():
-            print(attr_name, value.shape)
             if value is not None:
                 if len(value.shape) == 1:
                     # 1D arrays can be directly added
@@ -162,6 +161,9 @@ class Trials(BaseLoader):
         df = super().to_dataframe()
         df['start'] = df.intervals.apply(lambda x: x[0])
         df['end'] = df.intervals.apply(lambda x: x[1])
+        df['quiescence_intervals'] = df.intervals.apply(lambda x: np.array([x[0]-0.6,x[0]]))
+        df['quiescence_start'] = df.intervals.apply(lambda x: x[0]-0.6)
+        df['quiescence_end'] = df.intervals.apply(lambda x: x[0])
 
         return df
 
@@ -233,7 +235,7 @@ class Channels(BaseLoader):
 
     def to_dataframe(self) -> pd.DataFrame:
         """
-        Convert the Trials data to a pandas DataFrame.
+        Convert the Channels data to a pandas DataFrame.
         For multi-dimensional arrays, only the first dimension is used as the index,
         and the remaining dimensions are stored as array objects in the cells.
         """
@@ -242,7 +244,6 @@ class Channels(BaseLoader):
 
         # Process each attribute
         for attr_name, value in self.__dict__.items():
-            print(attr_name, value.shape)
             if attr_name == 'brain_location':
                 continue
             elif value is not None:
@@ -339,6 +340,7 @@ class Wheel(BaseLoader):
         # Compute direction change (+1 forward, -1 backward, 0 if no change)
         df['angle_change'] = np.diff(df['positions'],
                                                 prepend=df['positions'][0]) * DEGREES_PER_TICK
+
         return df
 
 @dataclass
@@ -351,6 +353,8 @@ class Session(BaseLoader):
     trials_df: Optional[pd.DataFrame] = field(default=None)
     wheel_df: Optional[pd.DataFrame] = field(default=None)
     channels_df: Optional[pd.DataFrame] = field(default=None)
+    quiescence_wheel_df: Optional[pd.DataFrame] = field(default=None)
+    quiescence_spikes_df: Optional[pd.DataFrame] = field(default=None)
 
     @classmethod
     def get_file_mapping(cls) -> Dict[str, str]:
@@ -414,25 +418,68 @@ class Session(BaseLoader):
         instance.spikes_df = instance.spikes_df.merge(instance.cluster_df,
                                                     left_on='clusters',
                                                     right_index=True,
-                                                    how='left').query('phy_annotation != 1')
+                                                    how='left',suffixes=("","_del")).query('phy_annotation != 1')
+        print(instance.spikes_df.columns)
 
         spikes_sorted = instance.spikes_df.sort_values('times')
         trials_sorted = instance.trials_df.sort_values('start')
         wheel_sorted = instance.wheel_df.sort_values('times')
 
-        # Assign the closest trial start to each spike and wheel position
-        spikes_with_intervals = pd.merge_asof(spikes_sorted, trials_sorted, left_on='times', right_on='start',
-                                              direction='backward').dropna()
+        # Drop columns only if they exist
+        columns_to_drop = ['mouse_name_del', 'date_exp_del', 'depths_del']
 
-        wheel_with_intervals = pd.merge_asof(wheel_sorted, trials_sorted, left_on='times', right_on='start',
-                                             direction='backward').dropna()
+
+
+        # Assign the closest trial start to each spike and wheel position
+        spikes_with_intervals = pd.merge_asof(spikes_sorted,
+                                              trials_sorted,
+                                              left_on='times',
+                                              right_on='start',
+                                              direction='backward',
+                                              suffixes=("", "_del")).dropna()
+
+
+        wheel_with_intervals = pd.merge_asof(wheel_sorted,
+                                             trials_sorted,
+                                             left_on='times',
+                                             right_on='start',
+                                             direction='backward',
+                                             suffixes=("", "_del"))
 
         # Keep only spikes within their assigned interval
         spikes_with_intervals = spikes_with_intervals[spikes_with_intervals['times'] <= spikes_with_intervals['end']]
         wheel_with_intervals = wheel_with_intervals[wheel_with_intervals['times'] <= wheel_with_intervals['end']]
 
-        instance.spikes_df = spikes_with_intervals
-        instance.wheel_df = wheel_with_intervals
+
+        # Repeat for quiescence periods
+        quiescence_trials_sorted = instance.trials_df.sort_values('quiescence_start')
+
+        quiescence_spikes_with_intervals = pd.merge_asof(spikes_sorted,
+                                                         quiescence_trials_sorted,
+                                                         left_on='times',
+                                                         right_on='quiescence_start',
+                                                         direction='backward',
+                                                         suffixes=("", "_del")).dropna()
+
+        quiescence_wheel_with_intervals = pd.merge_asof(wheel_sorted,
+                                                        quiescence_trials_sorted,
+                                                        left_on='times',
+                                                        right_on='quiescence_start',
+                                                        direction='backward',
+                                                        suffixes=("", "_del")).dropna()
+
+
+        instance.spikes_df = spikes_with_intervals.drop(
+            columns=[col for col in columns_to_drop if col in spikes_with_intervals.columns])
+
+        instance.wheel_df = wheel_with_intervals.drop(
+            columns=[col for col in columns_to_drop if col in wheel_with_intervals.columns])
+
+        instance.quiescence_spikes_df = quiescence_spikes_with_intervals.drop(
+            columns=[col for col in columns_to_drop if col in quiescence_spikes_with_intervals.columns])
+
+        instance.quiescence_wheel_df = quiescence_wheel_with_intervals.drop(
+            columns=[col for col in columns_to_drop if col in quiescence_wheel_with_intervals.columns])
 
         # instance.cluster_df = instance.cluster_df.merge(instance.channels_df[['probe', 'site', 'ccf_ap', 'ccf_dv', 'ccf_lr', 'allen_ontology']],
         #                               on=['probe', 'site'], how='left')
