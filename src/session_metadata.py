@@ -19,10 +19,9 @@ def calculate_peak_to_trough_duration(waveforms, sampling_rate=30000):
     float: Peak-to-trough duration in milliseconds
     """
     # Find peak and trough indices
-    waveform = waveforms[:,0]
 
-    peak_idx = np.argmax(waveform)
-    trough_idx = np.argmin(waveform)
+    peak_idx = np.argmax(waveforms)
+    trough_idx = np.argmin(waveforms)
 
     # Calculate time difference
     time_diff_samples = abs(peak_idx - trough_idx)
@@ -106,6 +105,24 @@ class Clusters(BaseLoader):
             value = getattr(self, attr, None)
             if value is not None:
                 setattr(self, attr, value.astype(int))
+
+    @classmethod
+    def from_tar(cls, tar_path: str | Path) -> 'BaseLoader':
+        """Load data from a tar archive."""
+        instance = cls()
+        file_attr_map = cls.get_file_mapping()
+
+        with tarfile.open(tar_path, 'r') as tar:
+            for file_name, attr_name in file_attr_map.items():
+                if file_name not in tar.getnames():
+                    print(f"Warning: {file_name} not found in tar archive")
+                    continue
+                elif attr_name == 'template_waveforms':
+                    setattr(instance, attr_name, np.squeeze(npy_loader(tar, file_name))[:,:,0])
+                else:
+                    setattr(instance, attr_name, np.squeeze(npy_loader(tar, file_name)))
+
+        return instance
 
     @classmethod
     def get_file_mapping(cls) -> Dict[str, str]:
@@ -419,7 +436,6 @@ class Session(BaseLoader):
                                                     left_on='clusters',
                                                     right_index=True,
                                                     how='left',suffixes=("","_del")).query('phy_annotation != 1')
-        print(instance.spikes_df.columns)
 
         spikes_sorted = instance.spikes_df.sort_values('times')
         trials_sorted = instance.trials_df.sort_values('start')
@@ -480,6 +496,7 @@ class Session(BaseLoader):
 
         instance.quiescence_wheel_df = quiescence_wheel_with_intervals.drop(
             columns=[col for col in columns_to_drop if col in quiescence_wheel_with_intervals.columns])
+
 
         # instance.cluster_df = instance.cluster_df.merge(instance.channels_df[['probe', 'site', 'ccf_ap', 'ccf_dv', 'ccf_lr', 'allen_ontology']],
         #                               on=['probe', 'site'], how='left')
