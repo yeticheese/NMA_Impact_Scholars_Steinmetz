@@ -176,11 +176,12 @@ class Trials(BaseLoader):
 
     def to_dataframe(self) -> pd.DataFrame:
         df = super().to_dataframe()
-        df['start'] = df.intervals.apply(lambda x: x[0])
-        df['end'] = df.intervals.apply(lambda x: x[1])
-        df['quiescence_intervals'] = df.intervals.apply(lambda x: np.array([x[0]-0.6,x[0]]))
-        df['quiescence_start'] = df.intervals.apply(lambda x: x[0]-0.6)
-        df['quiescence_end'] = df.intervals.apply(lambda x: x[0])
+        df['trial_interval'] = df.stimulus_times.apply(lambda x: np.array([x-0.5,x+2]))
+        df['trial_start'] = df.stimulus_times.apply(lambda x: x-0.5)
+        df['trial_end'] = df.stimulus_times.apply(lambda x: x+2)
+        df['quiescence_intervals'] = df.stimulus_times.apply(lambda x: np.array([x-0.5,x]))
+        df['quiescence_start'] = df.stimulus_times.apply(lambda x: x-0.5)
+        df['quiescence_end'] = df.stimulus_times.apply(lambda x: x)
 
         return df
 
@@ -438,7 +439,7 @@ class Session(BaseLoader):
                                                     how='left',suffixes=("","_del")).query('phy_annotation != 1')
 
         spikes_sorted = instance.spikes_df.sort_values('times')
-        trials_sorted = instance.trials_df.sort_values('start')
+        trials_sorted = instance.trials_df.sort_values('trial_start')
         wheel_sorted = instance.wheel_df.sort_values('times')
 
         # Drop columns only if they exist
@@ -450,7 +451,7 @@ class Session(BaseLoader):
         spikes_with_intervals = pd.merge_asof(spikes_sorted,
                                               trials_sorted,
                                               left_on='times',
-                                              right_on='start',
+                                              right_on='trial_start',
                                               direction='backward',
                                               suffixes=("", "_del")).dropna()
 
@@ -458,13 +459,13 @@ class Session(BaseLoader):
         wheel_with_intervals = pd.merge_asof(wheel_sorted,
                                              trials_sorted,
                                              left_on='times',
-                                             right_on='start',
+                                             right_on='trial_start',
                                              direction='backward',
                                              suffixes=("", "_del"))
 
         # Keep only spikes within their assigned interval
-        spikes_with_intervals = spikes_with_intervals[spikes_with_intervals['times'] <= spikes_with_intervals['end']]
-        wheel_with_intervals = wheel_with_intervals[wheel_with_intervals['times'] <= wheel_with_intervals['end']]
+        spikes_with_intervals = spikes_with_intervals[spikes_with_intervals['times'] <= spikes_with_intervals['trial_end']]
+        wheel_with_intervals = wheel_with_intervals[wheel_with_intervals['times'] <= wheel_with_intervals['trial_end']]
 
 
         # Repeat for quiescence periods
@@ -483,6 +484,12 @@ class Session(BaseLoader):
                                                         right_on='quiescence_start',
                                                         direction='backward',
                                                         suffixes=("", "_del")).dropna()
+
+        quiescence_spikes_with_intervals = quiescence_spikes_with_intervals[
+            quiescence_spikes_with_intervals['times'] <= quiescence_spikes_with_intervals['quiescence_end']]
+
+        quiescence_wheel_with_intervals = quiescence_wheel_with_intervals[
+            quiescence_wheel_with_intervals['times'] <= quiescence_wheel_with_intervals['quiescence_end']]
 
 
         instance.spikes_df = spikes_with_intervals.drop(
