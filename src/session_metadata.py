@@ -7,6 +7,17 @@ from typing import Dict, Optional
 from src.file_ops import npy_loader
 import pandas as pd
 
+
+# Constants
+TICKS_PER_REV = 1440
+DEGREES_PER_TICK = 360 / TICKS_PER_REV
+
+WHEEL_RADIUS = 31  # mm
+MM_PER_TICK = (2 * np.pi * WHEEL_RADIUS) / (TICKS_PER_REV)
+DVA_PER_MM = 90 / 20
+DVA_PER_TICK = DVA_PER_MM * MM_PER_TICK
+
+
 def calculate_peak_to_trough_duration(waveforms, sampling_rate=30000):
     """
     Calculate the peak-to-trough duration of a waveform.
@@ -30,6 +41,37 @@ def calculate_peak_to_trough_duration(waveforms, sampling_rate=30000):
     duration_ms = (time_diff_samples / sampling_rate) * 1000
 
     return duration_ms
+
+
+def compute_firing_rate(times):
+    times = pd.Series(times)  # Ensure 'times' is treated as a Pandas Series
+    if len(times) > 1:  # Ensure we have at least two time points
+        return len(times) #10ms bin
+    else:
+        return 0  # Avoid division by zero when there's only one time point
+
+
+def construct_2d_array(time_bin, angle_bin, neuron_type, firing_rate,time_bins, angle_bins):
+    # Create empty 2D array (17 rows x 250 columns) filled with zeros
+
+    # Map time values to column indices (0-249)
+    time_to_col = {str(t+5): i for i, t in enumerate(time_bins)}
+
+    # Map angle values to row indices (0-16)
+    angle_to_row = {str(a): i for i, a in enumerate(angle_bins)}
+
+    result = np.zeros((len(angle_to_row), len(time_to_col)))
+
+    # Fill the array with firing rates
+    for t, a, fr in zip(time_bin, angle_bin, firing_rate):
+        col = time_to_col[str(t)]
+        row = angle_to_row[str(a)]
+        if neuron_type == 'excitatory':
+            result[row, col] = fr
+        else:
+            result[row, col] = -fr
+
+    return result
 
 @dataclass
 class BaseLoader(ABC):
@@ -140,6 +182,8 @@ class Clusters(BaseLoader):
     def to_dataframe(self) -> pd.DataFrame:
         df = super().to_dataframe()
         df['peak_to_trough_duration'] = df['template_waveforms'].apply(calculate_peak_to_trough_duration)
+        df['neuron_type'] = df['peak_to_trough_duration'].apply(
+            lambda x: 'inhibitory' if x < 0.5 else 'excitatory')
 
         return df
 
@@ -182,6 +226,8 @@ class Trials(BaseLoader):
         df['quiescence_intervals'] = df.stimulus_times.apply(lambda x: np.array([x-0.5,x]))
         df['quiescence_start'] = df.stimulus_times.apply(lambda x: x-0.5)
         df['quiescence_end'] = df.stimulus_times.apply(lambda x: x)
+        df['contrast_pair'] = df.apply(lambda row: tuple(sorted([row['contrast_left'],
+                                                                 row['contrast_right']], reverse=True)), axis=1)
 
         return df
 
@@ -341,23 +387,21 @@ class Wheel(BaseLoader):
         # Create DataFrame
         df = pd.DataFrame(data_dict)
         df['times'] = np.linspace(self.times[0,1],self.times[1,1],int(self.times[1,0]+1))
-        # Constants
-        TICKS_PER_REV = 1440
-        DEGREES_PER_TICK = 360 / TICKS_PER_REV
+
 
         # Compute angle position (modulo 1440 to stay within one revolution)
-        df['angle_position'] = df['positions'].apply(
-            lambda x: (x % TICKS_PER_REV) * DEGREES_PER_TICK
-        )
+        df['angle_position'] = df['positions'].apply(lambda x: (x % TICKS_PER_REV) * DEGREES_PER_TICK)
 
         # Compute current revolution count (integer division)
         df['current_revolution'] = df['positions'].apply(
             lambda x: x // TICKS_PER_REV
         )
 
-        # Compute direction change (+1 forward, -1 backward, 0 if no change)
+        # Compute direction change (+1 clockwise to the right, -1 to the counterclockwise to the left, 0 if no change)
         df['angle_change'] = np.diff(df['positions'],
                                                 prepend=df['positions'][0]) * DEGREES_PER_TICK
+
+        df['ticks_change'] = np.diff(df['positions'], prepend=df['positions'][0])
 
         return df
 
@@ -373,6 +417,7 @@ class Session(BaseLoader):
     channels_df: Optional[pd.DataFrame] = field(default=None)
     quiescence_wheel_df: Optional[pd.DataFrame] = field(default=None)
     quiescence_spikes_df: Optional[pd.DataFrame] = field(default=None)
+    polar_df: Optional[pd.DataFrame] = field(default=None)
 
     @classmethod
     def get_file_mapping(cls) -> Dict[str, str]:
@@ -505,6 +550,80 @@ class Session(BaseLoader):
             columns=[col for col in columns_to_drop if col in quiescence_wheel_with_intervals.columns])
 
 
+        instance.wheel_df['stimulus_pos'] = instance.wheel_df.apply(
+                                            lambda row: 90 if row['contrast_right'] > row['contrast_left']
+                                            else -90 if row['contrast_left'] > row['contrast_right']
+                                            else np.nan, axis=1
+                                            )
+
+        mask = instance.wheel_df['times'] >= instance.wheel_df['gocue_times']
+        instance.wheel_df.loc[mask, 'stimulus_pos'] = instance.wheel_df.loc[mask,'stimulus_pos'] + DVA_PER_TICK * instance.wheel_df.loc[mask, 'ticks_change'].cumsum()
+
+        instance.quiescence_wheel_df['stimulus_pos'] = instance.quiescence_wheel_df.apply(
+                                            lambda row: 90 if row['contrast_right'] > row['contrast_left']
+                                            else -90 if row['contrast_left'] > row['contrast_right']
+                                            else np.nan, axis=1
+                                            )
+
+        quiescence_mask = instance.quiescence_wheel_df['times'] >= instance.quiescence_wheel_df['gocue_times']
+        instance.quiescence_wheel_df.loc[quiescence_mask, 'stimulus_pos'] = (instance.quiescence_wheel_df.loc[
+                                                                                quiescence_mask,'stimulus_pos'] +
+                                                                             DVA_PER_TICK *
+                                                                             instance.quiescence_wheel_df.loc[quiescence_mask, 'ticks_change'].cumsum())
+
+        # Example: Creating bins for every 20 degrees
+        angle_bins = np.linspace(-160, 160, 321)  # Assuming angle ranges from 0 to 360
+        angle_bin_labels = [f"{i}" for i in angle_bins[:-1]]  # Creating labels
+        time_bins = np.arange(-500, 2001, 10) + 5
+        time_labels = [i + 5 for i in time_bins[:-1]]
+        instance.wheel_df["stimulus_bin"] = pd.cut(instance.wheel_df["stimulus_pos"],
+                                                   bins=angle_bins, labels=angle_bin_labels,
+                                                   right=False)
+        instance.wheel_df['interval_times'] = (instance.wheel_df['times'] - instance.wheel_df['stimulus_times']) * 1000
+        instance.wheel_df['time_bin'] = pd.cut(instance.wheel_df['interval_times'],
+                                               bins=time_bins, labels=time_labels,
+                                               right=False)
+        instance.spikes_df['interval_times'] = (instance.spikes_df['times'] - instance.spikes_df['stimulus_times']) * 1000
+        instance.spikes_df['time_bin'] = pd.cut(instance.spikes_df['interval_times'], bins=time_bins,
+                                                labels=time_labels, right=False)
+
+        # Grouping and computing firing rate
+        agg_spikes_df = instance.spikes_df.groupby(
+            ['mouse_name', 'date_exp', 'trial_start', 'contrast_right', 'contrast_left', 'clusters', 'time_bin']).agg({
+            'times': compute_firing_rate,
+            'neuron_type': lambda x: np.unique(x)[0]
+            }).rename(columns={'times': 'firing_rate'}).dropna().reset_index()
+
+        agg_spikes_df['contrast_pair'] = agg_spikes_df.apply(
+            lambda row: tuple(sorted([row['contrast_left'], row['contrast_right']], reverse=True)), axis=1)
+
+        agg_wheel_df = instance.wheel_df[
+            ['mouse_name', 'date_exp', 'trial_start', 'contrast_right', 'contrast_left', 'contrast_pair', 'time_bin',
+             'stimulus_bin']].drop_duplicates()
+
+        agg_spikes_df = agg_spikes_df.merge(agg_wheel_df[['mouse_name', 'date_exp', 'trial_start', 'contrast_right', 'contrast_left',
+                                            'time_bin', 'stimulus_bin']],
+                              on=['mouse_name', 'date_exp', 'trial_start', 'contrast_right', 'contrast_left',
+                                  'time_bin'], how='left').dropna().reset_index()
+
+        polar_df = agg_spikes_df.groupby(
+            ['mouse_name', 'date_exp', 'trial_start', 'contrast_right', 'contrast_pair', 'clusters']).agg({
+            'time_bin': lambda x: list(x),
+            'stimulus_bin': lambda x: list(x),
+            'firing_rate': lambda x: list(x),
+            'neuron_type': lambda x: np.unique(x)[0]
+        })
+
+        polar_df['visual_coordinate'] = polar_df.apply(
+            lambda x: construct_2d_array(x['time_bin'], x['stimulus_bin'], x['neuron_type'], x['firing_rate'],
+                                         time_bins, angle_bins), axis=1)
+
+        instance.polar_df = polar_df.reset_index()
+
+        # instance.spikes_df['neuron_type'] = instance.spikes_df.merge(instance.cluster_df['neuron_type'],
+        #                                                              left_on='clusters',
+        #                                                              right_index=True,
+        #                                                              how='left')
         # instance.cluster_df = instance.cluster_df.merge(instance.channels_df[['probe', 'site', 'ccf_ap', 'ccf_dv', 'ccf_lr', 'allen_ontology']],
         #                               on=['probe', 'site'], how='left')
 
