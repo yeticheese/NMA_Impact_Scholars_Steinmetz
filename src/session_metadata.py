@@ -17,6 +17,11 @@ MM_PER_TICK = (2 * np.pi * WHEEL_RADIUS) / (TICKS_PER_REV)
 DVA_PER_MM = 90 / 20
 DVA_PER_TICK = DVA_PER_MM * MM_PER_TICK
 
+# Example: Creating bins for every 20 degrees
+angle_bins = np.linspace(-160, 160, 32)   # Assuming angle ranges from 0 to 360
+angle_bin_labels = [f"{i}" for i in angle_bins[:-1]]  # Creating labels
+time_bins = np.arange(-500, 2001, 50) + 25
+time_labels = [i for i in time_bins[:-1]]
 
 def calculate_peak_to_trough_duration(waveforms, sampling_rate=30000):
     """
@@ -55,7 +60,7 @@ def construct_2d_array(time_bin, angle_bin, neuron_type, firing_rate,time_bins, 
     # Create empty 2D array (17 rows x 250 columns) filled with zeros
 
     # Map time values to column indices (0-249)
-    time_to_col = {str(t+5): i for i, t in enumerate(time_bins)}
+    time_to_col = {str(t): i for i, t in enumerate(time_bins)}
 
     # Map angle values to row indices (0-16)
     angle_to_row = {str(a): i for i, a in enumerate(angle_bins)}
@@ -228,6 +233,12 @@ class Trials(BaseLoader):
         df['quiescence_end'] = df.stimulus_times.apply(lambda x: x)
         df['contrast_pair'] = df.apply(lambda row: tuple(sorted([row['contrast_left'],
                                                                  row['contrast_right']], reverse=True)), axis=1)
+        df['trial_outcome'] = df.apply(lambda row: 'left_reward' if (row['contrast_left'] > row['contrast_right']) & (row['response_choice'] == 1) & (row['feedback_type'] == 1)
+else 'right_reward' if (row['contrast_right'] > row['contrast_left']) & (row['response_choice'] == -1) & (row['feedback_type'] == 1)
+                                             else 'left_penalty' if (row['contrast_left'] > row['contrast_right']) & (row['response_choice'] == -1) & (row['feedback_type'] == -1)
+                                             else 'right_penalty'  if (row['contrast_right'] > row['contrast_left']) & (row['response_choice'] == 1) & (row['feedback_type'] == -1)
+                                             else 'nogo',
+                                             axis=1)
 
         return df
 
@@ -430,7 +441,7 @@ class Session(BaseLoader):
         }
 
     @classmethod
-    def from_tar(cls, tar_path: str | Path) -> 'Session':
+    def from_tar(cls, tar_path: str | Path, polar: bool = False) -> 'Session':
         """Load data from a tar archive and return a Session instance."""
         instance = cls()
         file_attr_map = cls.get_file_mapping()
@@ -571,11 +582,6 @@ class Session(BaseLoader):
                                                                              DVA_PER_TICK *
                                                                              instance.quiescence_wheel_df.loc[quiescence_mask, 'ticks_change'].cumsum())
 
-        # Example: Creating bins for every 20 degrees
-        angle_bins = np.linspace(-160, 160, 321)  # Assuming angle ranges from 0 to 360
-        angle_bin_labels = [f"{i}" for i in angle_bins[:-1]]  # Creating labels
-        time_bins = np.arange(-500, 2001, 10) + 5
-        time_labels = [i + 5 for i in time_bins[:-1]]
         instance.wheel_df["stimulus_bin"] = pd.cut(instance.wheel_df["stimulus_pos"],
                                                    bins=angle_bins, labels=angle_bin_labels,
                                                    right=False)
@@ -587,38 +593,51 @@ class Session(BaseLoader):
         instance.spikes_df['time_bin'] = pd.cut(instance.spikes_df['interval_times'], bins=time_bins,
                                                 labels=time_labels, right=False)
 
-        # Grouping and computing firing rate
-        agg_spikes_df = instance.spikes_df.groupby(
-            ['mouse_name', 'date_exp', 'trial_start', 'contrast_right', 'contrast_left', 'clusters', 'time_bin']).agg({
-            'times': compute_firing_rate,
-            'neuron_type': lambda x: np.unique(x)[0]
-            }).rename(columns={'times': 'firing_rate'}).dropna().reset_index()
 
-        agg_spikes_df['contrast_pair'] = agg_spikes_df.apply(
-            lambda row: tuple(sorted([row['contrast_left'], row['contrast_right']], reverse=True)), axis=1)
+        if polar:
+            # Grouping and computing firing rate
+            agg_spikes_df = instance.spikes_df.groupby(
+                ['mouse_name', 'date_exp', 'trial_start', 'contrast_right', 'contrast_left', 'clusters', 'time_bin']).agg({
+                'times': compute_firing_rate,
+                'neuron_type': lambda x: np.unique(x)[0]
+                }).rename(columns={'times': 'firing_rate'}).dropna().reset_index()
 
-        agg_wheel_df = instance.wheel_df[
-            ['mouse_name', 'date_exp', 'trial_start', 'contrast_right', 'contrast_left', 'contrast_pair', 'time_bin',
-             'stimulus_bin']].drop_duplicates()
+            agg_spikes_df['contrast_pair'] = agg_spikes_df.apply(
+                lambda row: tuple(sorted([row['contrast_left'], row['contrast_right']], reverse=True)), axis=1)
 
-        agg_spikes_df = agg_spikes_df.merge(agg_wheel_df[['mouse_name', 'date_exp', 'trial_start', 'contrast_right', 'contrast_left',
-                                            'time_bin', 'stimulus_bin']],
-                              on=['mouse_name', 'date_exp', 'trial_start', 'contrast_right', 'contrast_left',
-                                  'time_bin'], how='left').dropna().reset_index()
+            agg_wheel_df = instance.wheel_df[
+                ['mouse_name', 'date_exp', 'trial_start', 'contrast_right', 'contrast_left', 'contrast_pair', 'time_bin',
+                 'stimulus_bin']].drop_duplicates()
 
-        polar_df = agg_spikes_df.groupby(
-            ['mouse_name', 'date_exp', 'trial_start', 'contrast_right', 'contrast_pair', 'clusters']).agg({
-            'time_bin': lambda x: list(x),
-            'stimulus_bin': lambda x: list(x),
-            'firing_rate': lambda x: list(x),
-            'neuron_type': lambda x: np.unique(x)[0]
-        })
+            agg_spikes_df = agg_spikes_df.merge(agg_wheel_df[['mouse_name', 'date_exp', 'trial_start', 'contrast_right', 'contrast_left',
+                                                'time_bin', 'stimulus_bin']],
+                                  on=['mouse_name', 'date_exp', 'trial_start', 'contrast_right', 'contrast_left',
+                                      'time_bin'], how='left').dropna().reset_index()
 
-        polar_df['visual_coordinate'] = polar_df.apply(
-            lambda x: construct_2d_array(x['time_bin'], x['stimulus_bin'], x['neuron_type'], x['firing_rate'],
-                                         time_bins, angle_bins), axis=1)
+            polar_df = agg_spikes_df.groupby(
+                ['mouse_name', 'date_exp', 'trial_start', 'contrast_right', 'contrast_pair', 'clusters']).agg({
+                'time_bin': lambda x: list(x),
+                'stimulus_bin': lambda x: list(x),
+                'firing_rate': lambda x: list(x),
+                'neuron_type': lambda x: np.unique(x)[0]
+            })
 
-        instance.polar_df = polar_df.reset_index()
+            polar_df['visual_coordinate'] = polar_df.apply(
+                lambda x: construct_2d_array(x['time_bin'], x['stimulus_bin'], x['neuron_type'], x['firing_rate'],
+                                             time_bins, angle_bins), axis=1)
+
+            instance.polar_df = polar_df.reset_index()
+
+            instance.polar_df = instance.polar_df.merge(instance.trials_df[['mouse_name',
+                                                                               'date_exp',
+                                                                               'trial_start',
+                                                                               'contrast_right',
+                                                                               'contrast_pair','contrast_left','repNum','trial_outcome']],
+                                                       on=['mouse_name',
+                                                           'date_exp',
+                                                           'trial_start',
+                                                           'contrast_right',
+                                                           'contrast_pair'],how = 'left')
 
         # instance.spikes_df['neuron_type'] = instance.spikes_df.merge(instance.cluster_df['neuron_type'],
         #                                                              left_on='clusters',
