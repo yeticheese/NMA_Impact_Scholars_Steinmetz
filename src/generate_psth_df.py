@@ -1,8 +1,8 @@
-import argparse
 import numpy as np
 import pandas as pd
 from src.session_metadata import Session
 import os
+import dask.dataframe as dd  # Import Dask DataFrame
 
 data_directory = r'data\spikeAndBehavioralData'
 
@@ -40,7 +40,7 @@ def dat_subroutines(dat):
 
     cluster_subset = session_data.cluster_df[['depths', 'site', 'probe', 'template_waveforms',
                              'waveform_duration', 'peak_to_trough_duration',
-                             'mouse_name', 'date_exp']]
+                             'mouse_name', 'date_exp','phy_annotation']]
 
     neuron_data = {}
     trial_data = {}
@@ -54,11 +54,9 @@ def dat_subroutines(dat):
         if trial_result is not None:
             trial_data[key] = trial_result
 
-
     # Create DataFrames from the processed data
     neuron_df = pd.DataFrame(neuron_data)
     trial_df = pd.DataFrame(trial_data)
-
 
     # Add common fields
     for df in [neuron_df, trial_df]:
@@ -115,8 +113,7 @@ def dat_subroutines(dat):
 
     return merged_df
 
-
-def process_data(alldat):
+def process_data(alldat, output_dask=False, output_path=None):
     dfs = [dat_subroutines(dat) for dat in alldat]
 
     concat_df = pd.concat(dfs, ignore_index=True)
@@ -148,4 +145,13 @@ def process_data(alldat):
     concat_df['neuron_type'] = concat_df['peak_to_trough_duration'].apply(
         lambda x: 'inhibitory' if x < 0.5 else 'excitatory')
 
-    return concat_df
+    concat_df['stimulus_side'] = concat_df.apply(lambda row:'contralateral' if row['contrast_right'] > row['contrast_left'] else 'ipsilateral' if row['contrast_right'] < row['contrast_left'] else 'nogo',axis=1)
+
+    # Convert to Dask DataFrame if requested
+    if output_dask:
+        dask_df = dd.from_pandas(concat_df, npartitions=10)  # Adjust npartitions as needed
+        if output_path:
+            dask_df.to_parquet(output_path)  # Save to Parquet format
+        return dask_df
+    else:
+        return concat_df

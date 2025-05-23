@@ -6,6 +6,7 @@ import numpy as np
 from typing import Dict, Optional
 from src.file_ops import npy_loader
 import pandas as pd
+import dask.dataframe as dd
 
 
 # Constants
@@ -18,9 +19,9 @@ DVA_PER_MM = 90 / 20
 DVA_PER_TICK = DVA_PER_MM * MM_PER_TICK
 
 # Example: Creating bins for every 20 degrees
-angle_bins = np.linspace(-160, 160, 32)   # Assuming angle ranges from 0 to 360
+angle_bins = np.linspace(-160, 160, 33)+5  # Assuming angle ranges from 0 to 360
 angle_bin_labels = [f"{i}" for i in angle_bins[:-1]]  # Creating labels
-time_bins = np.arange(-500, 2001, 50) + 25
+time_bins = np.linspace(-495, 2005, 251)
 time_labels = [i for i in time_bins[:-1]]
 
 def calculate_peak_to_trough_duration(waveforms, sampling_rate=30000):
@@ -36,11 +37,14 @@ def calculate_peak_to_trough_duration(waveforms, sampling_rate=30000):
     """
     # Find peak and trough indices
 
-    peak_idx = np.argmax(waveforms)
     trough_idx = np.argmin(waveforms)
-
-    # Calculate time difference
-    time_diff_samples = abs(peak_idx - trough_idx)
+    peak_idx = np.argmax(waveforms)
+    if trough_idx < peak_idx:
+        # Calculate time difference
+        time_diff_samples = abs(peak_idx - trough_idx)
+    else:
+        peak_idx = np.argmin(waveforms[trough_idx:])
+        time_diff_samples = abs(peak_idx - trough_idx)
 
     # Convert to milliseconds
     duration_ms = (time_diff_samples / sampling_rate) * 1000
@@ -103,7 +107,7 @@ class BaseLoader(ABC):
 
         return instance
 
-    def to_dataframe(self) -> pd.DataFrame:
+    def to_dataframe(self, use_dask:bool = False) -> pd.DataFrame:
         """
         Converts field data to a pandas DataFrame.
         For multi-dimensional arrays, only the first dimension is used as the index,
@@ -130,6 +134,8 @@ class BaseLoader(ABC):
         # Create DataFrame
         df = pd.DataFrame(data_dict)
 
+        # if use_dask:
+        #     return dd.from_pandas(df, npartitions=1)
         return df
 
 
@@ -187,6 +193,7 @@ class Clusters(BaseLoader):
     def to_dataframe(self) -> pd.DataFrame:
         df = super().to_dataframe()
         df['peak_to_trough_duration'] = df['template_waveforms'].apply(calculate_peak_to_trough_duration)
+        df['p2t_duration'] = df['waveform_duration']*1000/30000
         df['neuron_type'] = df['peak_to_trough_duration'].apply(
             lambda x: 'inhibitory' if x < 0.5 else 'excitatory')
 
